@@ -1,4 +1,4 @@
-%%writefile app.py
+
 import streamlit as st
 import tensorflow as tf
 import numpy as np
@@ -73,4 +73,3 @@ if uploaded_file:
     ax.imshow(cam.squeeze(), cmap='jet', alpha=0.5)
     ax.axis('off')
     st.pyplot(fig)
-    
