@@ -1,3 +1,4 @@
+%%writefile app.py
 import streamlit as st
 import tensorflow as tf
 import numpy as np
@@ -6,13 +7,13 @@ from tensorflow.keras.preprocessing import image
 import os
 import gdown # Import gdown for downloading from Google Drive
 
-st.title("Skin Cancer Detection ,Grad-CAM")
+st.title("Skin Cancer Detection using ResNet and Grad-CAM (2 Classes)")
 
 # Path to your model file
 model_path = "resnet_skin_cancer_2class.h5"
 
 # Replace with your actual Google Drive File ID (ensure file is shared publicly)
-GOOGLE_DRIVE_FILE_ID = "https://drive.google.com/file/d/19hZJjhFR7kNUS7ZDbCMghnf3hwr4w37c/view?usp=drive_link" 
+GOOGLE_DRIVE_FILE_ID = "19hZJjhFR7kNUS7ZDbCMghnf3hwr4w37c" 
 
 # Load the 2-class model
 @st.cache_resource
@@ -72,3 +73,4 @@ if uploaded_file:
     ax.imshow(cam.squeeze(), cmap='jet', alpha=0.5)
     ax.axis('off')
     st.pyplot(fig)
+    
