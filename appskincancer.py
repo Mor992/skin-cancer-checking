@@ -6,13 +6,13 @@ from tensorflow.keras.preprocessing import image
 import os
 import gdown # Import gdown for downloading from Google Drive
 
-st.title("Skin Cancer Detection using ResNet and Grad-CAM (2 Classes)")
+st.title("Skin Cancer Detection ,Grad-CAM")
 
 # Path to your model file
 model_path = "resnet_skin_cancer_2class.h5"
 
 # Replace with your actual Google Drive File ID (ensure file is shared publicly)
-GOOGLE_DRIVE_FILE_ID = "19hZJjhFR7kNUS7ZDbCMghnf3hwr4w37c" 
+GOOGLE_DRIVE_FILE_ID = "https://drive.google.com/file/d/19hZJjhFR7kNUS7ZDbCMghnf3hwr4w37c/view?usp=drive_link" 
 
 # Load the 2-class model
 @st.cache_resource
