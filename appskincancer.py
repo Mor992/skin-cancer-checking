@@ -6,7 +6,7 @@ from tensorflow.keras.preprocessing import image
 import os
 import gdown  # for downloading from Google Drive
 
-st.title("Skin Cancer Detection using ResNet and Grad-CAM (2 Classes)")
+st.title("Skin Cancer Detection")
 
 # Path to your model file
 model_path = "resnet_skin_cancer_2class.h5"
