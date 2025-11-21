@@ -68,7 +68,7 @@ if uploaded_file:
     st.image(loaded_img, caption=f"Predicted Class: {pred_class_name}", use_column_width=True)
 
     # Compute Grad-CAM
-    cam = get_gradcam(model, img_array, "conv5_block3_out")
+    cam = get_gradcam(model, img_array)
 
     fig, ax = plt.subplots()
     ax.imshow(loaded_img)
