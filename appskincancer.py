@@ -9,10 +9,10 @@ import gdown  # for downloading from Google Drive
 st.title("Skin Cancer Detection")
 
 # Path to your model file
-model_path = "resnet_skin_cancer_2class.h5"
+model_path = "pca_model.pkl"
 
 # Google Drive file ID from your link
-GOOGLE_DRIVE_FILE_ID = "19hZJjhFR7kNUS7ZDbCMghnf3hwr4w37c"
+GOOGLE_DRIVE_FILE_ID = "1ajLgd70_mcR6q9LxOhUT5dFicUWmSkHB"
 
 @st.cache_resource
 def load_my_model():
