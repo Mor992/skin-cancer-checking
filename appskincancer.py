@@ -1,234 +1,500 @@
-"""
-Streamlit app: Grad-CAM for a Keras ResNet model
-Files included: this single-file app. Place final_resnet_model.keras in /mnt/data/ or provide the Google Drive file ID.
-
-Usage (development):
-    streamlit run streamlit_gradcam_app.py
-
-Features:
-- Load model from local path or Google Drive (via gdown)
-- Upload image or use sample
-- Compute Grad-CAM heatmap and overlay on image
-- Show top-k predictions
-- Option to provide class names (comma-separated)
-
-Defaults provided for convenience:
-- default local path: /mnt/data/final_resnet_model.keras
-- default Google Drive ID: 1kJWpQQlF-2Rtwj2xRmVtbDw-83cyjD3q
-
-Note: this app expects a Keras model saved with `model.save("...")` compatible with tf.keras.models.load_model.
-"""
+# app.py
+import os
+import io
+import zipfile
+import tempfile
+import gdown
+from typing import Optional
 
 import streamlit as st
 import numpy as np
-from PIL import Image
-import io
-import os
 import tensorflow as tf
+from PIL import Image
+import cv2
 import matplotlib.pyplot as plt
+import pandas as pd
 
-# Optional: to download from Google Drive
-try:
-    import gdown
-    GDOWN_AVAILABLE = True
-except Exception:
-    GDOWN_AVAILABLE = False
+DRIVE_FILE_ID = "191J7lKgDMBQ-urrk4LVH3afaE89ciiRT"  
+MODEL_LOCAL_NAME = "my_model.keras"                 
+MODEL_ZIP_NAME = "model_download.zip"               
+MODEL_IS_ZIP = False 
 
-# ---------------------
-# Utility functions
-# ---------------------
+# ===== UPDATED: 6 ACTUAL CLASSES FROM YOUR MODEL =====
+CLASS_NAMES = [
+    "Actinic Keratosis / Intraepithelial Carcinoma",
+    "Basal Cell Carcinoma",
+    "Benign Keratosis",
+    "Melanocytic Nevus",
+    "Melanoma",
+    "Vascular / Dermatofibroma"
+]
 
-def load_model_from_local(path):
-    if not os.path.exists(path):
-        raise FileNotFoundError(f"Model not found at {path}")
-    model = tf.keras.models.load_model(path)
-    return model
+CLASS_REPORTS = {
+    "Actinic Keratosis / Intraepithelial Carcinoma": {
+        "type": "Pre-cancerous",
+        "severity": "⚠️ Moderate Risk",
+        "description": (
+            "Actinic keratosis is a precancerous skin growth caused by sun damage. "
+            "While not cancer itself, it can develop into squamous cell carcinoma if left untreated. "
+            "These appear as rough, scaly patches on sun-exposed areas."
+        ),
+        "recommendation": (
+            "🏥 **Medical evaluation recommended.** Treatment options include cryotherapy, "
+            "topical medications, or photodynamic therapy. Regular monitoring is essential."
+        ),
+        "urgency": "medium",
+        "color": "#ffc107"
+    },
+    
+    "Basal Cell Carcinoma": {
+        "type": "Cancer (malignant)",
+        "severity": "🔴 High Risk - Cancer Detected",
+        "description": (
+            "Basal cell carcinoma is the most common form of skin cancer. It grows slowly "
+            "and rarely spreads to other parts of the body, but can cause local tissue damage "
+            "if left untreated. Often appears as a pearly or waxy bump."
+        ),
+        "recommendation": (
+            "🚨 **Immediate dermatologist consultation required.** Early treatment has excellent "
+            "success rates. Treatment typically involves surgical removal, Mohs surgery, or radiation."
+        ),
+        "urgency": "high",
+        "color": "#dc3545"
+    },
+    
+    "Benign Keratosis": {
+        "type": "Benign (non-cancerous)",
+        "severity": "✅ Low Risk",
+        "description": (
+            "Benign keratoses (including seborrheic keratoses) are harmless, non-cancerous "
+            "skin growths. They're very common, especially with aging, and appear as brown, "
+            "black, or tan growths with a waxy, scaly texture."
+        ),
+        "recommendation": (
+            "ℹ️ **No treatment necessary in most cases.** Monitor for changes in appearance. "
+            "Removal is optional for cosmetic reasons or if irritated by clothing."
+        ),
+        "urgency": "low",
+        "color": "#28a745"
+    },
+    
+    "Melanocytic Nevus": {
+        "type": "Benign (typically)",
+        "severity": "✅ Low Risk",
+        "description": (
+            "A melanocytic nevus (common mole) is a benign growth of melanocytes. "
+            "Most people have 10-40 moles on their body. They're usually harmless but "
+            "should be monitored for changes that could indicate melanoma."
+        ),
+        "recommendation": (
+            "👁️ **Monitor using the ABCDE rule:**\n\n"
+            "- **A**symmetry: One half doesn't match the other\n"
+            "- **B**order: Irregular, scalloped, or poorly defined\n"
+            "- **C**olor: Varied colors (brown, black, tan, red, white, blue)\n"
+            "- **D**iameter: Larger than 6mm (pencil eraser)\n"
+            "- **E**volving: Changes in size, shape, or color\n\n"
+            "Schedule a check-up if you notice any changes."
+        ),
+        "urgency": "low",
+        "color": "#28a745"
+    },
+    
+    "Melanoma": {
+        "type": "Cancer (malignant)",
+        "severity": "🔴 HIGH RISK - Serious Cancer Detected",
+        "description": (
+            "Melanoma is the most dangerous form of skin cancer. It develops in melanocytes "
+            "(pigment-producing cells) and can spread rapidly to other organs if not caught early. "
+            "Early detection and treatment are critical for survival."
+        ),
+        "recommendation": (
+            "🚨 **URGENT: See a dermatologist immediately.** Melanoma requires prompt medical "
+            "attention. Treatment may include surgical excision, immunotherapy, targeted therapy, "
+            "or radiation. Early-stage melanoma has a high cure rate with proper treatment."
+        ),
+        "urgency": "critical",
+        "color": "#8b0000"
+    },
+    
+    "Vascular / Dermatofibroma": {
+        "type": "Benign (non-cancerous)",
+        "severity": "✅ Low Risk",
+        "description": (
+            "This category includes vascular lesions (such as hemangiomas or cherry angiomas) "
+            "and dermatofibromas. These are benign growths that are harmless. Vascular lesions "
+            "appear as red or purple spots, while dermatofibromas are firm bumps in the skin."
+        ),
+        "recommendation": (
+            "ℹ️ **No treatment needed unless causing discomfort.** These lesions are benign. "
+            "Removal is optional for cosmetic reasons. Monitor for unusual changes."
+        ),
+        "urgency": "low",
+        "color": "#28a745"
+    }
+}
 
+st.set_page_config(
+    page_title="Skin Cancer Detection AI", 
+    page_icon="🔬",
+    layout="wide"
+)
 
-def download_model_from_gdrive(file_id, dest_path):
-    if not GDOWN_AVAILABLE:
-        raise RuntimeError("gdown is not installed. Add gdown to requirements or install it.")
-    url = f"https://drive.google.com/uc?id={file_id}"
-    gdown.download(url, dest_path, quiet=False)
-    return dest_path
+# -------------------------
+# Utility Functions
+# -------------------------
+def download_model_from_drive(drive_id: str, dest: str, zip_dest: str = None, is_zip: bool = False):
+    """Download model file from Google Drive (direct download)."""
+    url = f"https://drive.google.com/uc?export=download&id={drive_id}"
+    if is_zip:
+        if zip_dest is None:
+            raise ValueError("zip_dest must be provided when is_zip=True")
+        gdown.download(url, zip_dest, quiet=False)
+        return zip_dest
+    else:
+        gdown.download(url, dest, quiet=False)
+        return dest
 
-
-def preprocess_input_image(img: Image.Image, target_size=(224,224)):
-    img = img.convert('RGB')
-    img = img.resize(target_size)
-    arr = np.array(img).astype(np.float32)
-    # Use ResNet preprocessing if available
+def safe_load_model(path: str):
+    """Load a Keras model with a friendly error message."""
     try:
-        from tensorflow.keras.applications.resnet50 import preprocess_input
-        arr = preprocess_input(arr)
-    except Exception:
-        arr = (arr / 255.0)
-    return arr
+        model = tf.keras.models.load_model(path)
+        return model
+    except Exception as e:
+        st.error("Failed to load model. See logs for details.")
+        st.write("Model loading error:", e)
+        raise
 
+def preprocess_image_pil(pil_img: Image.Image, target_size=(224,224)):
+    pil_img = pil_img.convert("RGB")
+    pil_img = pil_img.resize(target_size)
+    arr = np.array(pil_img).astype("float32") / 255.0
+    return np.expand_dims(arr, axis=0)
 
-def make_gradcam_heatmap(img_array, model, last_conv_layer_name, pred_index=None):
-    # img_array: (H,W,3) preprocessed
-    img_tensor = tf.expand_dims(img_array, axis=0)
-
-    grad_model = tf.keras.models.Model(
-        [model.inputs], [model.get_layer(last_conv_layer_name).output, model.output]
-    )
-
-    with tf.GradientTape() as tape:
-        conv_outputs, predictions = grad_model(img_tensor)
-        if pred_index is None:
-            pred_index = tf.argmax(predictions[0])
-        class_channel = predictions[:, pred_index]
-
-    grads = tape.gradient(class_channel, conv_outputs)
-
-    pooled_grads = tf.reduce_mean(grads, axis=(0, 1, 2))
-
-    conv_outputs = conv_outputs[0]
-    heatmap = conv_outputs @ pooled_grads[..., tf.newaxis]
-    heatmap = tf.squeeze(heatmap)
-
-    # normalize
-    heatmap = tf.maximum(heatmap, 0) / (tf.reduce_max(heatmap) + 1e-8)
-    heatmap = heatmap.numpy()
-    return heatmap
-
-
-def overlay_heatmap_on_image(original_img: Image.Image, heatmap, alpha=0.4, cmap='jet'):
-    import matplotlib.cm as cm
-
-    heatmap_resized = Image.fromarray((heatmap * 255).astype(np.uint8)).resize(original_img.size, resample=Image.BILINEAR)
-    heatmap_arr = np.array(heatmap_resized)
-
-    colormap = cm.get_cmap(cmap)
-    colored_heatmap = colormap(heatmap_arr / 255.0)[:, :, :3]
-    colored_heatmap = (colored_heatmap * 255).astype(np.uint8)
-    colored_heatmap = Image.fromarray(colored_heatmap)
-
-    overlay = Image.blend(original_img.convert('RGBA'), colored_heatmap.convert('RGBA'), alpha=alpha)
+def overlay_heatmap_on_image(original_image_np, heatmap, alpha=0.5):
+    hmap = cv2.resize(heatmap, (original_image_np.shape[1], original_image_np.shape[0]))
+    hmap = np.uint8(255 * hmap)
+    hmap_color = cv2.applyColorMap(hmap, cv2.COLORMAP_JET)
+    hmap_color = cv2.cvtColor(hmap_color, cv2.COLOR_BGR2RGB)
+    overlay = (original_image_np.astype("float32") * (1 - alpha) + hmap_color.astype("float32") * alpha)
+    overlay = np.clip(overlay, 0, 255).astype("uint8")
     return overlay
 
-# ---------------------
-# Streamlit UI
-# ---------------------
+def get_last_conv_layer(model: tf.keras.Model) -> Optional[str]:
+    """Find the last convolutional layer name in the model."""
+    last_conv = None
+    for layer in model.layers:
+        if hasattr(layer, "output_shape"):
+            shp = layer.output_shape
+            if isinstance(shp, tuple) and len(shp) == 4:
+                name = layer.name.lower()
+                if "conv" in name or "conv2d" in name:
+                    last_conv = layer.name
+    return last_conv
 
-st.set_page_config(page_title='Grad-CAM for ResNet', layout='centered')
-st.title('Grad-CAM viewer (ResNet-compatible)')
+def grad_cam_plus_plus(model, image, class_idx, layer_name):
+    """Robust Grad-CAM++ implementation."""
+    grad_model = tf.keras.models.Model([model.inputs], [model.get_layer(layer_name).output, model.output])
 
-st.markdown("Provide a Keras `.keras` model saved with `model.save(...)` (or let the app download the model from Google Drive).")
+    with tf.GradientTape() as tape:
+        conv_outputs, predictions = grad_model(image)
 
-# defaults per user input
-DEFAULT_LOCAL_MODEL_PATH = "/mnt/data/final_resnet_model.keras"
-DEFAULT_GDRIVE_ID = "1kJWpQQlF-2Rtwj2xRmVtbDw-83cyjD3q"
+        if isinstance(predictions, (list, tuple)):
+            preds_candidate = None
+            for p in predictions:
+                try:
+                    p_tensor = tf.convert_to_tensor(p)
+                    if p_tensor.shape.rank is not None and p_tensor.shape.rank >= 1:
+                        preds_candidate = p_tensor
+                        break
+                except Exception:
+                    continue
+            if preds_candidate is None:
+                preds_candidate = tf.convert_to_tensor(predictions[0])
+            predictions = preds_candidate
+        else:
+            predictions = tf.convert_to_tensor(predictions)
+        loss = predictions[0, class_idx]
 
-use_download = st.checkbox('Download model from Google Drive (if unchecked, load local file)', value=False)
-model = None
-model_load_error = None
+    grads = tape.gradient(loss, conv_outputs)
+    grads_sq = tf.square(grads)
+    grads_cu = grads_sq * grads
 
-if use_download:
-    file_id = st.text_input('Google Drive file ID', value=DEFAULT_GDRIVE_ID)
-    dest = st.text_input('Destination path to save model', value=os.path.join('/tmp','final_resnet_model.keras'))
-    if st.button('Download and load model'):
-        try:
-            st.info('Downloading model...')
-            download_model_from_gdrive(file_id, dest)
-            st.success('Download complete; loading model...')
-            model = load_model_from_local(dest)
-            st.success('Model loaded successfully')
-        except Exception as e:
-            model_load_error = str(e)
-            st.error(f'Error loading model: {model_load_error}')
-else:
-    local_path = st.text_input('Local model path', value=DEFAULT_LOCAL_MODEL_PATH)
-    if st.button('Load local model'):
-        try:
-            model = load_model_from_local(local_path)
-            st.success('Model loaded successfully')
-        except Exception as e:
-            model_load_error = str(e)
-            st.error(f'Error loading model: {model_load_error}')
+    alpha_num = grads_sq
+    alpha_denom = 2 * grads_sq + tf.reduce_sum(conv_outputs * grads_cu, axis=(1,2), keepdims=True)
+    alpha_denom = tf.where(alpha_denom != 0, alpha_denom, tf.ones_like(alpha_denom))
 
-# Show model summary (collapsed)
-if model is not None:
-    with st.expander('Show model summary'):
-        buf = io.StringIO()
-        try:
-            model.summary(print_fn=lambda x: buf.write(x + "\n"))
-            st.text(buf.getvalue())
-        except Exception as e:
-            st.text('Unable to show model summary: ' + str(e))
+    alphas = alpha_num / alpha_denom
+    weights = tf.reduce_sum(alphas * tf.maximum(grads, 0), axis=(1,2))
+    weights = tf.reshape(weights, [-1,1,1,tf.shape(conv_outputs)[-1]])
 
-# Image input
-st.header('Input image')
-uploaded = st.file_uploader('Upload an image', type=['jpg','jpeg','png'])
-use_sample = st.button('Use sample image (if no upload)')
+    grad_cam_output = tf.reduce_sum(weights * conv_outputs, axis=-1)
+    heatmap = tf.maximum(grad_cam_output, 0)
+    heatmap = heatmap / (tf.reduce_max(heatmap) + 1e-10)
+    heatmap = tf.squeeze(heatmap)
+    return heatmap.numpy()
 
-if uploaded is not None:
-    image = Image.open(uploaded)
-elif use_sample:
-    # create a blank placeholder or instruct user
-    st.info('No sample included. Please upload an image.')
-    image = None
-else:
-    image = None
-
-# Class names input
-class_names_input = st.text_input('Comma-separated class names (optional). Example: benign,malignant', value='')
-class_names = [c.strip() for c in class_names_input.split(',') if c.strip()]
-
-# Last convolutional layer name input (try common ResNet names)
-last_conv_default = st.text_input('Last convolutional layer name (ResNet example: conv5_block3_out)', value='conv5_block3_out')
-
-# Run Grad-CAM
-if st.button('Run Grad-CAM'):
-    if model is None:
-        st.error('Load a model first')
-    elif image is None:
-        st.error('Upload an image first')
+@st.cache_resource(show_spinner=False)
+def get_model(download_if_missing: bool = True):
+    if os.path.exists(MODEL_LOCAL_NAME):
+        model_path = MODEL_LOCAL_NAME
     else:
+        if not download_if_missing:
+            raise FileNotFoundError(f"{MODEL_LOCAL_NAME} not found.")
+        st.info("Downloading model from Google Drive...")
+        if MODEL_IS_ZIP:
+            downloaded = download_model_from_drive(DRIVE_FILE_ID, MODEL_LOCAL_NAME, zip_dest=MODEL_ZIP_NAME, is_zip=True)
+            with zipfile.ZipFile(downloaded, "r") as z:
+                z.extractall(".")
+            if os.path.exists(MODEL_LOCAL_NAME):
+                model_path = MODEL_LOCAL_NAME
+            else:
+                candidates = [f for f in os.listdir(".") if f.endswith(".keras") or os.path.isdir(f)]
+                if candidates:
+                    model_path = candidates[0]
+                else:
+                    raise FileNotFoundError("Could not locate model inside the extracted zip.")
+        else:
+            downloaded = download_model_from_drive(DRIVE_FILE_ID, MODEL_LOCAL_NAME, is_zip=False)
+            model_path = MODEL_LOCAL_NAME
+
+    model = safe_load_model(model_path)
+    return model
+
+# -------------------------
+# Streamlit UI
+# -------------------------
+st.title("🔬 Skin Cancer Detection System")
+st.markdown("*AI-Powered Early Screening Tool - ResNet50 with Attention Mechanism*")
+st.markdown("---")
+
+with st.spinner("Loading AI model..."):
+    try:
+        model = get_model()
+        st.success("✅ Model loaded successfully (96.94% test accuracy)")
+    except Exception as e:
+        st.error("❌ Model could not be loaded. Check logs or model file.")
+        st.stop()
+
+# Sidebar
+st.sidebar.header("⚙️ Settings")
+default_layer = "conv5_block3_3_conv"
+detected_last_conv = get_last_conv_layer(model)
+if detected_last_conv is None:
+    detected_last_conv = default_layer
+
+layer_name = st.sidebar.text_input(
+    "Conv layer for Grad-CAM", 
+    value=detected_last_conv,
+    help="Leave as default for automatic detection"
+)
+show_gradcam = st.sidebar.checkbox("Show Grad-CAM++ Heatmap", value=True)
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("### 📋 About")
+st.sidebar.info(
+    "This AI system detects 6 types of skin lesions:\n\n"
+    "✅ Benign conditions\n"
+    "⚠️ Pre-cancerous lesions\n"
+    "🔴 Cancerous lesions"
+)
+
+# Main upload section
+st.markdown("### 📤 Upload Image")
+uploaded_file = st.file_uploader(
+    "Choose a clear, well-lit image of the skin lesion",
+    type=["jpg", "png", "jpeg"],
+    help="Supported formats: JPG, PNG, JPEG"
+)
+
+if uploaded_file is not None:
+    try:
+        image_data = uploaded_file.read()
+        pil_img = Image.open(io.BytesIO(image_data)).convert("RGB")
+    except Exception as e:
+        st.error("❌ Could not read the uploaded image.")
+        st.stop()
+
+    # Layout: Image on left, results on right
+    col1, col2 = st.columns([1, 1.5])
+
+    with col1:
+        st.markdown("#### 📸 Uploaded Image")
+        st.image(pil_img, use_column_width=True)
+
+    with col2:
+        st.markdown("#### 🔍 Analysis Results")
+        
+        with st.spinner("🔄 Analyzing image..."):
+            input_img = preprocess_image_pil(pil_img, target_size=(224,224))
+            preds = model.predict(input_img, verbose=0)
+            
+            if preds.ndim == 1:
+                preds = np.expand_dims(preds, axis=0)
+            
+            pred_idx = int(np.argmax(preds[0]))
+            pred_class = CLASS_NAMES[pred_idx] if pred_idx < len(CLASS_NAMES) else f"Class {pred_idx}"
+            pred_prob = float(preds[0, pred_idx]) * 100
+
+        # Get class info
+        class_info = CLASS_REPORTS[pred_class]
+        
+        # Display prediction with color coding
+        st.markdown(
+            f"<h3 style='color: {class_info['color']};'>{class_info['severity']}</h3>",
+            unsafe_allow_html=True
+        )
+        st.markdown(f"### {pred_class}")
+        
+        # Confidence meter
+        st.markdown(f"**Confidence:** {pred_prob:.1f}%")
+        st.progress(pred_prob / 100)
+        
+        st.markdown(f"**Type:** {class_info['type']}")
+
+    # Full-width sections below
+    st.markdown("---")
+    
+    # Description and Recommendation
+    col3, col4 = st.columns(2)
+    
+    with col3:
+        st.markdown("### 📋 About This Condition")
+        st.info(class_info['description'])
+    
+    with col4:
+        st.markdown("### 💡 Recommended Action")
+        urgency = class_info['urgency']
+        if urgency in ["high", "critical"]:
+            st.error(class_info['recommendation'])
+        elif urgency == "medium":
+            st.warning(class_info['recommendation'])
+        else:
+            st.success(class_info['recommendation'])
+
+    # Detailed probabilities
+    st.markdown("---")
+    st.markdown("### 📊 Detailed Probability Breakdown")
+    
+    prob_data = []
+    for i, name in enumerate(CLASS_NAMES):
+        prob = float(preds[0, i]) * 100 if i < preds.shape[1] else 0.0
+        prob_data.append({"Condition": name, "Probability": f"{prob:.2f}%"})
+    
+    prob_df = pd.DataFrame(prob_data)
+    prob_df = prob_df.sort_values("Probability", ascending=False, key=lambda x: x.str.rstrip('%').astype(float))
+    
+    st.dataframe(prob_df, use_container_width=True, hide_index=True)
+
+    # Grad-CAM visualization
+    if show_gradcam:
+        st.markdown("---")
+        st.markdown("### 🔥 AI Focus Map (Grad-CAM++)")
+        st.markdown("*This heatmap shows which areas the AI focused on to make its prediction*")
+        
         try:
-            # Preprocess
-            target_size = (model.input_shape[1], model.input_shape[2]) if len(model.input_shape) >= 3 else (224,224)
-            pre = preprocess_input_image(image, target_size=target_size)
+            _ = model.get_layer(layer_name)
+        except Exception:
+            auto = get_last_conv_layer(model)
+            if auto:
+                st.warning(f"Layer '{layer_name}' not found. Using '{auto}' instead.")
+                layer_name = auto
+            else:
+                st.error("Could not find a convolutional layer for Grad-CAM.")
+                layer_name = None
 
-            # Predict
-            preds = model.predict(np.expand_dims(pre, axis=0))
-            top_k = min(5, preds.shape[-1])
-            top_inds = preds[0].argsort()[-top_k:][::-1]
-
-            # Display predictions
-            st.subheader('Top predictions')
-            for i, idx in enumerate(top_inds):
-                name = class_names[idx] if idx < len(class_names) else str(idx)
-                st.write(f"{i+1}. {name} — score: {float(preds[0, idx]):.4f}")
-
-            # Grad-CAM
-            last_conv_layer_name = last_conv_default
+        if layer_name:
             try:
-                heatmap = make_gradcam_heatmap(pre, model, last_conv_layer_name, pred_index=top_inds[0])
+                with st.spinner("Generating heatmap..."):
+                    heatmap = grad_cam_plus_plus(model, input_img.astype("float32"), pred_idx, layer_name)
+                    orig_np = np.array(pil_img.convert("RGB"))
+                    overlay = overlay_heatmap_on_image(orig_np, heatmap, alpha=0.5)
+                
+                col5, col6, col7 = st.columns([1, 1, 1])
+                with col5:
+                    st.image(pil_img, caption="Original", use_column_width=True)
+                with col6:
+                    fig, ax = plt.subplots()
+                    ax.imshow(heatmap, cmap='jet')
+                    ax.axis('off')
+                    st.pyplot(fig)
+                    st.caption("Heatmap")
+                with col7:
+                    st.image(overlay, caption="Overlay", use_column_width=True)
+                
             except Exception as e:
-                st.error('Error computing Grad-CAM: ' + str(e))
-                st.stop()
+                st.error("❌ Grad-CAM generation failed.")
+                with st.expander("Show error details"):
+                    st.code(str(e))
 
-            overlay = overlay_heatmap_on_image(image, heatmap, alpha=0.4)
+    # Download report
+    st.markdown("---")
+    st.markdown("### 📥 Download Report")
+    
+    report_text = f"""SKIN LESION ANALYSIS REPORT
+{'='*50}
 
-            # Show images
-            st.image(image, caption='Original image', use_column_width=True)
-            st.image(overlay, caption='Grad-CAM overlay', use_column_width=True)
+PREDICTION RESULTS:
+Detected Condition: {pred_class}
+Confidence: {pred_prob:.2f}%
+Type: {class_info['type']}
+Severity: {class_info['severity']}
 
-            # Also show raw heatmap
-            fig, ax = plt.subplots()
-            ax.axis('off')
-            ax.imshow(heatmap, interpolation='nearest')
-            st.pyplot(fig)
+DETAILED PROBABILITIES:
+"""
+    for i, name in enumerate(CLASS_NAMES):
+        prob = float(preds[0, i]) * 100 if i < preds.shape[1] else 0.0
+        report_text += f"{name}: {prob:.2f}%\n"
 
-        except Exception as e:
-            st.error('Failed to run Grad-CAM: ' + str(e))
+    report_text += f"""
+DESCRIPTION:
+{class_info['description']}
 
-# Footer / tips
-st.markdown('''
-**Tips:**
-- If you get `Layer not found` for the last conv layer, open model summary and find a suitable final convolution block name (e.g. `conv5_block3_out` for ResNet50 as provided by Keras applications).
-- If predictions look reversed or inputs are wrong, check preprocessing: the app tries `tf.keras.applications.resnet50.preprocess_input` first, otherwise scales to [0,1].
-- To include this app on GitHub: place this file in a repo with `requirements.txt` listing dependencies (tensorflow, streamlit, pillow, numpy, matplotlib, gdown).
-''')
+RECOMMENDATION:
+{class_info['recommendation']}
+
+{'='*50}
+IMPORTANT DISCLAIMER:
+This is an AI screening tool and should NOT replace professional 
+medical diagnosis. Always consult a qualified dermatologist for 
+proper evaluation and treatment recommendations.
+
+Report generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}
+Model Accuracy: 96.94% (on test dataset)
+"""
+
+    st.download_button(
+        label="📄 Download Full Report (TXT)",
+        data=report_text,
+        file_name=f"skin_lesion_report_{pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')}.txt",
+        mime="text/plain"
+    )
+
+    # Disclaimer
+    st.markdown("---")
+    st.warning(
+        "⚠️ **MEDICAL DISCLAIMER:** This AI tool is designed for screening purposes only "
+        "and should not be used as a substitute for professional medical advice, diagnosis, "
+        "or treatment. Always seek the advice of a qualified dermatologist or healthcare "
+        "provider with any questions regarding a skin condition."
+    )
+
+else:
+    # No image uploaded - show info
+    st.info("👆 Please upload a skin lesion image to begin analysis")
+    
+    st.markdown("---")
+    st.markdown("### 📚 What This System Can Detect:")
+    
+    for class_name in CLASS_NAMES:
+        with st.expander(f"ℹ️ {class_name}"):
+            info = CLASS_REPORTS[class_name]
+            st.markdown(f"**Type:** {info['type']}")
+            st.markdown(f"**Severity:** {info['severity']}")
+            st.markdown(f"**Description:** {info['description']}")
+            st.markdown(f"**Recommendation:** {info['recommendation']}")
+    
+    st.markdown("---")
+    st.markdown("### 🎯 Model Performance")
+    st.success("✅ **96.94% accuracy** on test dataset with 1,800 images")
+    st.info("✅ Trained on 12,000 dermatoscopic images")
+    st.info("✅ Based on ResNet50 architecture with custom attention mechanism")
